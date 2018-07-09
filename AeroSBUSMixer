@@ -49,20 +49,17 @@ volatile int eMin = 0;
 volatile int eMax = 0;
 volatile int eIn = 0;
 
-// THR1 variables.
+// THR1, THR2 variables.
 int THR1_OUT_PIN = 4;
-volatile int thr1Out = 0;
-
-// THR2 variables.
 int THR2_OUT_PIN = 5;
+volatile int thr1Out = 0;
 volatile int thr2Out = 0;
 
-// AIL1, AIL2 variables.
-int AIL1_OUT_PIN = 2;
-int AIL2_OUT_PIN = 3;
-volatile int ail1Out = 0;
-volatile int ail2Out = 0;
-
+// ELV1, ELV2 variables.
+int ELV1_OUT_PIN = 2;
+int ELV2_OUT_PIN = 3;
+volatile int elv1Out = 0;
+volatile int elv2Out = 0;
 
 // LED failsafe and button variables. 
 int LED_OUT_PIN = 6;
@@ -71,7 +68,6 @@ int FAILSAFE_OUT_PIN = 8;
 
 // SBUS data array.
 uint8_t sbusData[25];
-
 
 void setup(){
   pinMode(0,INPUT_PULLUP);
@@ -91,8 +87,8 @@ void setup(){
   
   pinMode(THR1_OUT_PIN, OUTPUT);
   pinMode(THR2_OUT_PIN, OUTPUT);
-  pinMode(AIL1_OUT_PIN, OUTPUT);
-  pinMode(AIL2_OUT_PIN, OUTPUT);
+  pinMode(ELV1_OUT_PIN, OUTPUT);
+  pinMode(ELV2_OUT_PIN, OUTPUT);
   pinMode(LED_OUT_PIN, OUTPUT); 
   pinMode(FAILSAFE_OUT_PIN, OUTPUT);
     
@@ -192,13 +188,13 @@ void loop(){
     float aInA = getValue(aMin, aMax, aIn);
     float eInA = getValue(eMin, eMax, eIn);
 
-    float ail1 = eInA + aInA - 0.5;
-    float ail2 = eInA - aInA + 0.5;
+    float elv1 = eInA + aInA - 0.5;
+    float elv2 = eInA - aInA + 0.5;
            
     thr1Out = setValue(tMin, tMax, thr1 - extra2);
     thr2Out = setValue(tMin, tMax, thr2 - extra1);   
-    ail1Out = setValue(aMin, aMax, ail1);
-    ail2Out = setValue(aMin, aMax, 1.0 - ail2);
+    elv1Out = setValue(aMin, aMax, elv1);
+    elv2Out = setValue(aMin, aMax, 1.0 - elv2);
 
     // Do output 50 Hz generation.
     // SBUS cycle frequency is 100 Hz use 
@@ -207,7 +203,7 @@ void loop(){
       waitTimePoint(cycleStart + 1000);    
              
       if (evenCycle) {
-          doPulse(AIL1_OUT_PIN, ail1Out);  
+          doPulse(ELV1_OUT_PIN, elv1Out);  
       } else {
           doPulse(THR1_OUT_PIN, thr1Out);
       }
@@ -215,7 +211,7 @@ void loop(){
       waitTimePoint(cycleStart + 4000);    
              
       if (evenCycle) {
-          doPulse(AIL2_OUT_PIN, ail2Out);  
+          doPulse(ELV2_OUT_PIN, elv2Out);  
       } else {
           doPulse(THR2_OUT_PIN, thr2Out);
       }
