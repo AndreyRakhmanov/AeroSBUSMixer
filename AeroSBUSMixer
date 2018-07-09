@@ -1,0 +1,381 @@
+// This sketch of Arduino Micro Pro based controller of 2-engine delta wing 
+// airplane. It mixes THR and RUD sygnals and also AIL and ELE sygnals. 
+// For input it uses SBUS signal from FrSky S6R receiver connected to 
+// Arduino UART (Serial1) port. (The SBUS signal should be inverted). 
+// It is possible to use USB-based serial port (Serial) for the debugging.
+// To get good mixing min and max of input sygnals should be found. It is done
+// by calibration operation. All calibration  data is stored in EPROM.
+
+#include <EEPROM.h>
+
+// State variables.
+boolean calibOn = false;
+boolean startOn = true;
+boolean readyOn = false;
+boolean evenCycle = false;
+volatile unsigned long cycleStart = 0;
+
+// Calibration data EPROM bytes.
+const int NUM_PARAMS = 9;
+const int RMIN =       0;
+const int RMAX =       1;
+const int TMIN =       2;
+const int TMAX =       3;
+const int AMIN =       5;
+const int AMAX =       6;
+const int EMIN =       7;
+const int EMAX =       8;
+
+// RUDDER variables.
+int RUD_IN_PIN = 3;
+volatile int rMax = 0;
+volatile int rMin = 0;
+volatile int rIn = 0;
+volatile unsigned long rStart = 0;
+float rCutA = 0.7;
+
+// Throttle variables.
+volatile int tMin = 0;
+volatile int tMax = 0;
+volatile int tIn = 0;
+
+// AIL variables.
+volatile int aMin = 0;
+volatile int aMax = 0;
+volatile int aIn = 0;
+
+// ELE variables.
+volatile int eMin = 0;
+volatile int eMax = 0;
+volatile int eIn = 0;
+
+// THR1 variables.
+int THR1_OUT_PIN = 4;
+volatile int thr1Out = 0;
+
+// THR2 variables.
+int THR2_OUT_PIN = 5;
+volatile int thr2Out = 0;
+
+// AIL1, AIL2 variables.
+int AIL1_OUT_PIN = 2;
+int AIL2_OUT_PIN = 3;
+volatile int ail1Out = 0;
+volatile int ail2Out = 0;
+
+
+// LED failsafe and button variables. 
+int LED_OUT_PIN = 6;
+int BUTTON_IN_PIN = 7;
+int FAILSAFE_OUT_PIN = 8;
+
+// SBUS data array.
+uint8_t sbusData[25];
+
+
+void setup(){
+  pinMode(0,INPUT_PULLUP);
+  // Serial.begin(115200);
+  Serial1.begin(100000);
+
+  // Set default calibration values 
+  // when start with button pressed foe 3 sec.
+  if (buttonPressed()) {
+    delay(3000);
+    
+    if(buttonPressed()) {
+      formatEEPROM();
+    }
+  }
+  
+  
+  pinMode(THR1_OUT_PIN, OUTPUT);
+  pinMode(THR2_OUT_PIN, OUTPUT);
+  pinMode(AIL1_OUT_PIN, OUTPUT);
+  pinMode(AIL2_OUT_PIN, OUTPUT);
+  pinMode(LED_OUT_PIN, OUTPUT); 
+  pinMode(FAILSAFE_OUT_PIN, OUTPUT);
+    
+  pinMode(BUTTON_IN_PIN, INPUT);
+
+  // Set default calibration values 
+  // when start with button pressed.
+  if (buttonPressed()) {
+    formatEEPROM();
+  }
+  
+  readEEPROM();    
+  blinkLED(1);
+}
+
+void loop(){
+    evenCycle = !evenCycle;
+     
+    // Sanity check, look if Serial1 isn't empty.
+    if (Serial1.available()) {
+        readyOn = false;    
+        setLED(false);
+    }
+
+    // Try to get syncronization wait 1 cycle 
+    // collecting all bytes.
+    if (!readyOn) {
+      delayMicroseconds(100);
+      
+      int numBytes = Serial1.available();
+
+      if (numBytes) {
+        for (int idx=0; idx < numBytes; idx++) 
+          Serial1.read();        
+      } else {
+          readyOn = true;
+          setLED(true);
+      }
+
+      return;
+    }
+
+    // Read SBUS data, all data should be read in one pack.
+    Serial1.readBytes(sbusData, 25);
+
+    cycleStart = micros();
+
+    // Check SBUS data for integrity.                   
+    if (sbusData[0] != 0x0f || sbusData[24] != 0) {
+      readyOn = false;
+      setLED(false);
+      return;
+    }
+
+    // Blink 3 times, finishing check-up.
+    if (startOn) {
+      blinkLED(2);
+      startOn = false;
+      readyOn = false;
+      
+      return;
+    } 
+
+    // Process first 4 channels.
+    aIn  = ((sbusData[1]|sbusData[2]<< 8) & 0x07FF);
+    eIn  = ((sbusData[2]>>3|sbusData[3]<<5) & 0x07FF);
+    tIn  = ((sbusData[3]>>6|sbusData[4]<<2|sbusData[5]<<10) & 0x07FF);
+    rIn  = ((sbusData[5]>>1|sbusData[6]<<7) & 0x07FF);
+
+    boolean failsafeOn = sbusData[23] & (1<<3);
+    digitalWrite(FAILSAFE_OUT_PIN, failsafeOn ? HIGH : LOW);
+    
+    // THR and RUD mix calculation.
+    float rInA = getValue(rMin, rMax, rIn);
+    float tInA = getValue(tMin, tMax, tIn);
+    float diffCorr = 0.8;   
+    
+    float diffRA = 2.0 * (rInA - 0.5);    
+    float thr1 = tInA * (1.0 + diffRA * diffCorr);
+    float thr2 = tInA * (1.0 - diffRA * diffCorr);
+
+    float extra1 = 0;
+    float extra2 = 0; 
+    float dummy = 0;        
+    
+    if (thr1 > 1.0) 
+      extra1 = thr1 - 1.0;
+    else 
+      dummy = thr1 - 1.0;
+      
+    if (thr2 > 1.0) 
+      extra2 = thr2 - 1.0;
+    else 
+      dummy = thr1 - 1.0;
+
+    // AIL and ELE calcualtaion.
+    float aInA = getValue(aMin, aMax, aIn);
+    float eInA = getValue(eMin, eMax, eIn);
+
+    float ail1 = eInA + aInA - 0.5;
+    float ail2 = eInA - aInA + 0.5;
+           
+    thr1Out = setValue(tMin, tMax, thr1 - extra2);
+    thr2Out = setValue(tMin, tMax, thr2 - extra1);   
+    ail1Out = setValue(aMin, aMax, ail1);
+    ail2Out = setValue(aMin, aMax, 1.0 - ail2);
+
+    // Do output 50 Hz generation.
+    // SBUS cycle frequency is 100 Hz use 
+    // even and odd cycles for AIL and THR.
+    if (!calibOn) {      
+      waitTimePoint(cycleStart + 1000);    
+             
+      if (evenCycle) {
+          doPulse(AIL1_OUT_PIN, ail1Out);  
+      } else {
+          doPulse(THR1_OUT_PIN, thr1Out);
+      }
+  
+      waitTimePoint(cycleStart + 4000);    
+             
+      if (evenCycle) {
+          doPulse(AIL2_OUT_PIN, ail2Out);  
+      } else {
+          doPulse(THR2_OUT_PIN, thr2Out);
+      }
+    }
+
+    // Calibration section.
+    
+    if (!buttonPressed()) { 
+      if (!calibOn) {
+        rMin = 1000;
+        rMax = 1000;
+        tMin = 1000;
+        tMax = 1000;
+        aMin = 1000;
+        aMax = 1000;
+        eMin = 1000;                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+        eMax = 1000;
+              
+        calibOn = true;
+        setLED(false);
+      }
+      
+      rMin = min(rMin, rIn);
+      rMax = max(rMax, rIn); 
+      tMin = min(tMin, tIn);
+      tMax = max(tMax, tIn);
+      aMin = min(aMin, aIn);
+      aMax = max(aMax, aIn);
+      eMin = min(eMin, eIn);
+      eMax = max(eMax, eIn);
+      
+      return;
+    } else {  
+      if (calibOn) {            
+        // Check if calibration results are valid.
+        if ((tMax - tMin > 600) &&
+            (rMax - rMin > 600) &&
+            (aMax - aMin > 600) &&
+            (eMax - eMin > 600)) {                
+          blinkLED(3);   
+  
+          // Save new calibration data. 
+          writeEEPROM();
+        } else {
+          // Read old values.
+          readEEPROM();
+        }
+        
+        calibOn = false;
+        setLED(true);
+      } 
+    }
+}
+
+// UTILITY FUNCTIONS
+
+// Converts PPM pulse length in mks
+// to double value in the range [0.0 - 1.0].
+float getValue(int v1, int v2, int v)
+{
+  if (v < v1)
+    return 0.0;
+  else if (v > v2)
+    return 1.0;
+
+  return (v - v1) * 1.0 / (v2 - v1);
+}
+
+// Converts double value [0.0 - 1.0] to 
+// the PPM pulse length in mks.
+int setValue(int v1, int v2, float value)
+{
+  int v = v1 + value * (v2 - v1);
+
+  if (v < v1)
+    v = v1;
+
+  if (v > v2)
+    v = v2;
+
+  // This are experimentally set coefficients 
+  // for transfer SBUS value to pulse length.
+  return 880 + v * 0.65;
+}
+
+// First time formatting.
+void formatEEPROM()
+{
+   EEPROM.write(RMIN, 10 / 10);
+   EEPROM.write(RMAX, 2000 / 10);
+   EEPROM.write(TMIN, 10 / 10);
+   EEPROM.write(TMAX, 2000 / 10);
+   EEPROM.write(AMIN, 10 / 10);
+   EEPROM.write(AMAX, 2000 / 10);
+   EEPROM.write(EMIN, 10 / 10);
+   EEPROM.write(EMAX, 2000 / 10);   
+}
+
+// Reads EEPROM into memory.
+void readEEPROM()
+{
+  rMin = EEPROM.read(RMIN) * 10;
+  rMax = EEPROM.read(RMAX) * 10;  
+  tMin = EEPROM.read(TMIN) * 10;
+  tMax = EEPROM.read(TMAX) * 10;  
+  aMin = EEPROM.read(AMIN) * 10;
+  aMax = EEPROM.read(AMAX) * 10;  
+  eMin = EEPROM.read(EMIN) * 10;
+  eMax = EEPROM.read(EMAX) * 10;    
+}
+
+// Writes EEPROM from memory.
+void writeEEPROM()
+{
+  EEPROM.write(RMIN, rMin / 10);
+  EEPROM.write(RMAX, rMax / 10);    
+  EEPROM.write(TMIN, tMin / 10);
+  EEPROM.write(TMAX, tMax / 10);   
+  EEPROM.write(AMIN, aMin / 10);
+  EEPROM.write(AMAX, aMax / 10);              
+  EEPROM.write(EMIN, eMin / 10);
+  EEPROM.write(EMAX, eMax / 10);  
+}
+
+// Blinks LED num times.
+void blinkLED(int num)
+{
+  for (int idx=0; idx<num; idx++) {
+    setLED(true);
+    delay(150);    
+    setLED(false);
+    delay(150); 
+    setLED(true);     
+  }
+}
+
+// Sets LED on.
+void setLED(boolean isOn)
+{
+  digitalWrite(LED_OUT_PIN, isOn ? 1 : 0);    
+}
+
+// Test if the button is pressed.
+boolean buttonPressed() 
+{
+  return !digitalRead(BUTTON_IN_PIN);
+}
+
+void waitTimePoint(unsigned long point)
+{
+  int delay = point - micros();
+
+  if (delay > 0) {
+    delayMicroseconds(delay);
+  }   
+}
+  
+void doPulse(int pin, int pulseWidth)
+{      
+    digitalWrite(pin, HIGH);
+    delayMicroseconds(pulseWidth);
+    digitalWrite(pin, LOW);    
+}
