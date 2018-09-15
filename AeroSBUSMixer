@@ -5,6 +5,7 @@
 // It is possible to use USB-based serial port (Serial) for the debugging.
 // To get good mixing min and max of input sygnals should be found. It is done
 // by calibration operation. All calibration  data is stored in EPROM.
+// Elecrical schema is in https://s3.eu-central-1.amazonaws.com/andreyr.photos/raznoe/S8RMixer.png
 
 #include <EEPROM.h>
 
@@ -357,7 +358,7 @@ void setLED(boolean isOn)
 // Test if the button is pressed.
 boolean buttonPressed() 
 {
-  return !digitalRead(BUTTON_IN_PIN);
+  return digitalRead(BUTTON_IN_PIN);
 }
 
 void waitTimePoint(unsigned long point)
